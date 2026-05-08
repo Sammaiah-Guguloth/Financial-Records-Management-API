@@ -65,6 +65,39 @@ app.use(
 );
 
 // For the Notion like editor
+// import { v2 as cloudinary } from "cloudinary";
+
+// cloudinary.config({
+//   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+//   api_key: process.env.CLOUDINARY_API_KEY,
+//   api_secret: process.env.CLOUDINARY_API_SECRET,
+// });
+
+// // POST /api/sign-upload
+// app.post("/api/sign-upload", (req, res) => {
+//   const timestamp = Math.round(Date.now() / 1000);
+
+//   const paramsToSign = {
+//     timestamp,
+//     folder: "notion-editor", // optional — organise uploads
+//     // eager: 'c_limit,w_1200',   // optional — transform on upload
+//   };
+
+//   const signature = cloudinary.utils.api_sign_request(
+//     paramsToSign,
+//     process.env.CLOUDINARY_API_SECRET
+//   );
+
+//   res.json({
+//     signature,
+//     timestamp,
+//     api_key: process.env.CLOUDINARY_API_KEY,
+//     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+//     folder: "notion-editor",
+//   });
+// });
+// =======================================================
+
 import { v2 as cloudinary } from "cloudinary";
 
 cloudinary.config({
@@ -73,14 +106,16 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// POST /api/sign-upload
+// ── 1. Sign Upload ─────────────────────────────────────────────────────────
+// Client calls this BEFORE uploading so Cloudinary knows it's authenticated.
+// We set `access_control: authenticated` so the asset is private by default.
 app.post("/api/sign-upload", (req, res) => {
   const timestamp = Math.round(Date.now() / 1000);
 
   const paramsToSign = {
     timestamp,
-    folder: "notion-editor", // optional — organise uploads
-    // eager: 'c_limit,w_1200',   // optional — transform on upload
+    folder: "notion-editor",
+    type: "private", // ← this is the key param
   };
 
   const signature = cloudinary.utils.api_sign_request(
@@ -94,8 +129,57 @@ app.post("/api/sign-upload", (req, res) => {
     api_key: process.env.CLOUDINARY_API_KEY,
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
     folder: "notion-editor",
+    type: "private", // ← send to client so it uses the right upload URL
   });
 });
+
+// // ── 2. Generate Temporary Signed URL ──────────────────────────────────────
+// // Client sends public_id → server returns a URL valid for 5 minutes.
+// // The URL is generated entirely server-side; the private asset never gets
+// // a permanent public URL.
+// app.post("/api/get-image-url", (req, res) => {
+//   const { public_id } = req.body;
+
+//   if (!public_id) {
+//     return res.status(400).json({ error: "public_id is required" });
+//   }
+
+//   // sign_url: true + expires_at = Cloudinary generates a short-lived URL
+//   const signedUrl = cloudinary.url(public_id, {
+//     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+//     api_key: process.env.CLOUDINARY_API_KEY,
+//     api_secret: process.env.CLOUDINARY_API_SECRET,
+//     sign_url: true,
+//     type: "authenticated", // ← must match upload type
+//     expires_at: Math.round(Date.now() / 1000) + 60 * 5, // 5 minutes
+//     secure: true,
+//   });
+
+//   res.json({ url: signedUrl });
+// });
+
+// POST /api/get-image-url  — use private_download_url instead of cloudinary.url
+app.post("/api/get-image-url", (req, res) => {
+  const { public_id } = req.body;
+  if (!public_id)
+    return res.status(400).json({ error: "public_id is required" });
+
+  // const expires_at = Math.floor(Date.now() / 1000) + 60 * 60; // 1 hour
+  const expires_at = Math.floor(Date.now() / 1000) + 3 * 60; // 3 mins for check
+
+  const url = cloudinary.utils.private_download_url(public_id, "jpg", {
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET, // ← add these
+    resource_type: "image",
+    type: "private",
+    expires_at,
+  });
+
+  res.json({ url });
+});
+
+// =====================================================
 
 // Swagger Documentation Route
 import swaggerUi from "swagger-ui-express";
