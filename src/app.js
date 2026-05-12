@@ -183,7 +183,7 @@ app.post("/api/get-image-url", (req, res) => {
 
 // ================= AI Endpoint using Gemini for Notion like editor ================
 
-import { google } from "@ai-sdk/google";
+import { groq } from "@ai-sdk/groq";
 import { streamText } from "ai";
 import { generateText } from "ai";
 
@@ -233,12 +233,130 @@ import { generateText } from "ai";
 
 // ─── AFTER (drop-in replacement) ───────────────────────────
 
+// app.post("/api/ai/command", async (req, res) => {
+//   console.log("req came to /command");
+//   const { messages } = req.body;
+
+//   try {
+//     // Normalize messages: Plate AI sends parts[] (Vercel AI SDK v4 format)
+//     const coreMessages = messages.map((m) => ({
+//       role: m.role,
+//       content:
+//         typeof m.content === "string"
+//           ? m.content
+//           : Array.isArray(m.parts)
+//           ? m.parts
+//               .filter((p) => p.type === "text")
+//               .map((p) => p.text)
+//               .join("")
+//           : String(m.content ?? ""),
+//     }));
+
+//     // ✅ Plain text stream — compatible with TextStreamChatTransport
+//     res.setHeader("Content-Type", "text/plain; charset=utf-8");
+//     res.setHeader("Cache-Control", "no-cache");
+//     res.setHeader("Connection", "keep-alive");
+
+//     const result = streamText({
+//       model: google("gemini-2.0-flash"), // or your preferred model
+//       messages: coreMessages,
+//       system: `You are a helpful writing assistant inside a rich text editor.
+// Help users write, edit, improve, and summarize content.
+// Respond in markdown format.`,
+//     });
+
+//     const reader = result.textStream.getReader();
+//     while (true) {
+//       const { done, value } = await reader.read();
+//       if (done) break;
+//       // ✅ Write the raw text chunk — no "0:" prefix, no JSON.stringify
+//       res.write(value);
+//     }
+
+//     res.end();
+//   } catch (error) {
+//     console.error("AI Command Error:", error);
+//     if (!res.headersSent) {
+//       res.status(500).json({ error: "Failed to process AI command" });
+//     }
+//   }
+// });
+
+// app.post("/api/ai/copilot", async (req, res) => {
+//   const { prompt, system } = req.body;
+
+//   console.log("req came to /copilot");
+
+//   try {
+//     const result = await generateText({
+//       model: google("gemini-3-flash-preview"),
+//       prompt,
+//       system,
+//       maxOutputTokens: 1000, // Increased limit
+//       temperature: 0.7,
+//       abortSignal: req.signal,
+//     });
+
+//     res.json({ text: result.text }); // Explicitly return the text field
+//   } catch (error) {
+//     if (error?.name === "AbortError") {
+//       return res.status(408).json(null);
+//     }
+//     console.log("error : ", error);
+//     res.status(500).json({ error: "Failed to process copilot request" });
+//   }
+// });
+
+// ============================================================
+// BACKEND FIX: Graceful error handling for quota / rate-limit errors
+// Replace both AI endpoints in your app.js with these versions.
+// ============================================================
+
+// ── Helper: extract a clean message from AI SDK errors ──────
+
+function getAIErrorMessage(error) {
+  const raw = error?.responseBody || error?.message || JSON.stringify(error) || "";
+
+  const body =
+    typeof raw === "string"
+      ? (() => {
+          try {
+            return JSON.parse(raw);
+          } catch {
+            return null;
+          }
+        })()
+      : raw;
+
+  const apiMsg = body?.error?.message || body?.message || "";
+  const status = body?.error?.code || error?.statusCode || error?.status;
+
+  if (status === 429 || apiMsg.includes("rate limit") || apiMsg.includes("quota")) {
+    return {
+      code: 429,
+      message: "Rate limit reached. Please wait a moment and try again.",
+    };
+  }
+
+  if (status === 503 || apiMsg.includes("overloaded")) {
+    return {
+      code: 503,
+      message: "Service temporarily overloaded. Please try again in a moment.",
+    };
+  }
+
+  return {
+    code: status || 500,
+    message: apiMsg || error?.message || "AI request failed. Please try again.",
+  };
+}
+
+// ── /api/ai/command  (streaming — used by AI Chat) ──────────
 app.post("/api/ai/command", async (req, res) => {
   console.log("req came to /command");
   const { messages } = req.body;
 
   try {
-    // Normalize messages: Plate AI sends parts[] (Vercel AI SDK v4 format)
     const coreMessages = messages.map((m) => ({
       role: m.role,
       content:
@@ -252,58 +370,63 @@ app.post("/api/ai/command", async (req, res) => {
           : String(m.content ?? ""),
     }));
 
-    // ✅ Plain text stream — compatible with TextStreamChatTransport
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-
     const result = streamText({
-      model: google("gemini-2.5-flash-lite"), // or your preferred model
+      model: groq("llama-3.3-70b-versatile"),
       messages: coreMessages,
       system: `You are a helpful writing assistant inside a rich text editor.
 Help users write, edit, improve, and summarize content.
 Respond in markdown format.`,
     });
 
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
     const reader = result.textStream.getReader();
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      // ✅ Write the raw text chunk — no "0:" prefix, no JSON.stringify
-      res.write(value);
+      res.write(value); // plain text — matches TextStreamChatTransport
     }
 
     res.end();
   } catch (error) {
     console.error("AI Command Error:", error);
+
     if (!res.headersSent) {
-      res.status(500).json({ error: "Failed to process AI command" });
+      const { code, message } = getAIErrorMessage(error);
+      res.status(code).json({ error: message });
+    } else {
+      // Headers already sent (stream started) — end cleanly
+      res.end();
     }
   }
 });
 
+// ── /api/ai/copilot  (non-streaming — used by Copilot ghost text) ──
 app.post("/api/ai/copilot", async (req, res) => {
   const { prompt, system } = req.body;
-
   console.log("req came to /copilot");
 
   try {
     const result = await generateText({
-      model: google("gemini-2.5-flash-lite"),
+      model: groq("llama-3.1-8b-instant"),
       prompt,
       system,
-      maxOutputTokens: 1000, // Increased limit
+      maxOutputTokens: 1000,
       temperature: 0.7,
       abortSignal: req.signal,
     });
 
-    res.json({ text: result.text }); // Explicitly return the text field
+    res.json({ text: result.text });
   } catch (error) {
     if (error?.name === "AbortError") {
       return res.status(408).json(null);
     }
-    console.log("error : ", error);
-    res.status(500).json({ error: "Failed to process copilot request" });
+
+    console.error("Copilot Error:", error);
+    const { code, message } = getAIErrorMessage(error);
+    res.status(code).json({ error: message });
   }
 });
 
