@@ -187,39 +187,90 @@ import { google } from "@ai-sdk/google";
 import { streamText } from "ai";
 import { generateText } from "ai";
 
+// app.post("/api/ai/command", async (req, res) => {
+//   console.log("req came to /command");
+//   const { messages } = req.body;
+
+//   try {
+//     // Normalize messages from Plate AI format to Vercel AI SDK CoreMessage format
+//     const coreMessages = messages.map((m) => ({
+//       role: m.role,
+//       content: m.content ?? m.parts,
+//     }));
+
+//     res.setHeader("Content-Type", "text/event-stream");
+//     res.setHeader("Cache-Control", "no-cache");
+//     res.setHeader("Connection", "keep-alive");
+
+//     const result = streamText({
+//       model: google("gemini-3-flash-preview"),
+//       messages: coreMessages,
+//       system: `You are a helpful writing assistant inside a rich text editor.
+// Help users write, edit, improve, and summarize content.
+// Respond in markdown format.`,
+//     });
+
+//     // Manually implement the Vercel AI SDK v3 Data Stream protocol
+//     // which the frontend @ai-sdk/react (v3) useChat hook expects.
+//     res.setHeader("Content-Type", "text/plain; charset=utf-8");
+
+//     const reader = result.textStream.getReader();
+//     while (true) {
+//       const { done, value } = await reader.read();
+//       if (done) break;
+//       // The format is 0:"text_chunk"\n
+//       res.write(`0:${JSON.stringify(value)}\n`);
+//     }
+
+//     res.end();
+//   } catch (error) {
+//     console.error("AI Command Error:", error);
+//     if (!res.headersSent) {
+//       res.status(500).json({ error: "Failed to process AI command" });
+//     }
+//   }
+// });
+
+// ─── AFTER (drop-in replacement) ───────────────────────────
+
 app.post("/api/ai/command", async (req, res) => {
   console.log("req came to /command");
   const { messages } = req.body;
 
   try {
-    // Normalize messages from Plate AI format to Vercel AI SDK CoreMessage format
+    // Normalize messages: Plate AI sends parts[] (Vercel AI SDK v4 format)
     const coreMessages = messages.map((m) => ({
       role: m.role,
-      content: m.content ?? m.parts,
+      content:
+        typeof m.content === "string"
+          ? m.content
+          : Array.isArray(m.parts)
+          ? m.parts
+              .filter((p) => p.type === "text")
+              .map((p) => p.text)
+              .join("")
+          : String(m.content ?? ""),
     }));
 
-    res.setHeader("Content-Type", "text/event-stream");
+    // ✅ Plain text stream — compatible with TextStreamChatTransport
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
 
     const result = streamText({
-      model: google("gemini-3-flash-preview"),
+      model: google("gemini-2.5-flash-lite"), // or your preferred model
       messages: coreMessages,
       system: `You are a helpful writing assistant inside a rich text editor.
 Help users write, edit, improve, and summarize content.
 Respond in markdown format.`,
     });
 
-    // Manually implement the Vercel AI SDK v3 Data Stream protocol
-    // which the frontend @ai-sdk/react (v3) useChat hook expects.
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-
     const reader = result.textStream.getReader();
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      // The format is 0:"text_chunk"\n
-      res.write(`0:${JSON.stringify(value)}\n`);
+      // ✅ Write the raw text chunk — no "0:" prefix, no JSON.stringify
+      res.write(value);
     }
 
     res.end();
@@ -238,7 +289,7 @@ app.post("/api/ai/copilot", async (req, res) => {
 
   try {
     const result = await generateText({
-      model: google("gemini-3-flash-preview"),
+      model: google("gemini-2.5-flash-lite"),
       prompt,
       system,
       maxOutputTokens: 1000, // Increased limit
